@@ -122,14 +122,16 @@ where
         chip.set_retries(config.auto_retry)?;
         // Set rf
         chip.setup_rf(config.data_rate, config.pa_level)?;
+        // Set auto ack
+        chip.set_auto_ack(config.auto_ack_enabled)?;
         // Set payload size
         chip.set_payload_size(config.payload_size)?;
         // Set address length
         chip.set_address_width(config.addr_width)?;
-        // Reset status
-        chip.reset_status()?;
         // This channel should be universally safe and not bleed over into adjacent spectrum.
         chip.set_channel(config.channel)?;
+        // Reset status
+        chip.reset_status()?;
         // flush buffers
         chip.flush_rx()?;
         chip.flush_tx()?;
@@ -138,7 +140,6 @@ where
         if let Some(encoding_scheme) = config.crc_encoding_scheme {
             chip.enable_crc(encoding_scheme)?;
         }
-
         chip.config_reg = chip.read_register(Register::CONFIG)?;
 
         chip.power_up(delay)?;
@@ -445,6 +446,7 @@ where
         // pulse CE pin to signal transmission start
         self.set_ce_high()?;
         delay.delay_us(10);
+        while (self.status()?.value() & (1u8 << 5 | 1u8 << 4)) == 0 {}
         self.set_ce_low()?;
 
         // Clear interrupt flags
@@ -485,6 +487,24 @@ where
             Register::SETUP_RETR,
             (auto_retry.raw_delay() << 4) | (auto_retry.count()),
         )
+    }
+
+    /// Set auto acknowledgement
+    pub fn set_auto_ack(&mut self, enable: bool) -> Result<(), TransferError<SPIErr, PinErr>> {
+        if enable {
+            self.write_register(Register::EN_AA, 0x3F)?;
+        } else {
+            self.write_register(Register::EN_AA, 0)?;
+
+            let old_reg = self.read_register(Register::FEATURE)?;
+            self.write_register(Register::FEATURE, old_reg | !(1 << 1))?;
+        }
+
+        Ok(())
+    }
+
+    pub fn awaits_ack(&mut self) -> Result<bool, TransferError<SPIErr, PinErr>> {
+        Ok((self.read_register(Register::FEATURE)? & (1 << 1)) > 0)
     }
 
     /// Returns the auto retransmission config.
@@ -560,7 +580,9 @@ where
     /// assert_eq!(chip.data_rate()?, DataRate::R2Mbps);
     /// ```
     pub fn data_rate(&mut self) -> Result<DataRate, TransferError<SPIErr, PinErr>> {
-        self.read_register(Register::RF_SETUP).map(DataRate::from)
+        self.read_register(Register::RF_SETUP)
+            .map(|v| v & 1 << 3)
+            .map(DataRate::from)
     }
 
     /// Returns the current power amplifier level as a [`PALevel`] enum.
@@ -573,7 +595,9 @@ where
     /// assert_eq!(chip.power_amp_level()?, PALevel::Min);
     /// ```
     pub fn power_amp_level(&mut self) -> Result<PALevel, TransferError<SPIErr, PinErr>> {
-        self.read_register(Register::RF_SETUP).map(PALevel::from)
+        self.read_register(Register::RF_SETUP)
+            .map(|v| v & 3 << 1)
+            .map(PALevel::from)
     }
 
     /// Flush transmission FIFO, used in TX mode.
@@ -804,9 +828,12 @@ where
         let addr_width = AddressWidth::from_register(self.read_register(Register::SETUP_AW)?);
 
         let tx_addr = self.read_tx()?;
-        let rx1_addr = self.read_rx()?;
+        let rx0_addr = self.read_rx0()?;
+        let rx1_addr = self.read_rx1()?;
         let auto_ack = self.read_register(Register::EN_AA)?;
         let open_read_pipes = self.read_register(Register::EN_RXADDR)?;
+        let awaits_ack = self.awaits_ack()?;
+        let status = self.status()?;
 
         Ok(crate::config::DebugInfo {
             channel,
@@ -820,7 +847,10 @@ where
             tx_addr,
             auto_ack,
             open_read_pipes,
+            rx0_addr,
             rx1_addr,
+            awaits_ack,
+            status,
         })
     }
 
@@ -903,7 +933,23 @@ where
         self.set_ncs_high()?;
         Ok(buf)
     }
-    fn read_rx(&mut self) -> Result<[u8; 5], TransferError<SPIErr, PinErr>> {
+
+    fn read_rx0(&mut self) -> Result<[u8; 5], TransferError<SPIErr, PinErr>> {
+        self.tx_buf[0] = Instruction::RR.opcode() | Register::RX_PW_P0.addr();
+        self.tx_buf[1..=Self::MAX_ADDR_WIDTH].copy_from_slice(&[0; 5]);
+        // Write to spi
+        self.set_ncs_low()?;
+        let r = self.spi_transfer_tx_buf(Self::MAX_ADDR_WIDTH)?;
+        // Transfer the data read to buf.
+        // Skip first byte because it contains the command.
+        // Make both slices are the same length, otherwise `copy_from_slice` panics.
+        let mut buf = [0; 5];
+        buf.copy_from_slice(&r[1..=5]);
+        self.set_ncs_high()?;
+        Ok(buf)
+    }
+
+    fn read_rx1(&mut self) -> Result<[u8; 5], TransferError<SPIErr, PinErr>> {
         self.tx_buf[0] = Instruction::RR.opcode() | Register::RX_PW_P1.addr();
         self.tx_buf[1..=Self::MAX_ADDR_WIDTH].copy_from_slice(&[0; 5]);
         // Write to spi
@@ -918,7 +964,7 @@ where
         Ok(buf)
     }
 
-    fn setup_rf(
+    pub fn setup_rf(
         &mut self,
         data_rate: DataRate,
         level: PALevel,
