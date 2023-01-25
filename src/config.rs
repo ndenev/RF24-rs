@@ -363,6 +363,7 @@ impl defmt::Format for DataRate {
         match *self {
             DataRate::R1Mbps => write!(fmt, "1 Mbps"),
             DataRate::R2Mbps => write!(fmt, "2 Mbps"),
+            DataRate::R250Kbps => write!(fmt, "250 Kbps"),
         }
     }
 }
