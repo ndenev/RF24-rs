@@ -764,7 +764,7 @@ impl defmt::Format for DebugInfo {
 
         write!(
             fmt,
-            "Nrf24l01 {{ channel: {}, frequency: {}, data_rate: {}, pa_level: {}, crc_encoding_scheme: {}, payload_size: {}, retry_setup: {}, mode: {}, address_width: {}, awaits_ack: {}, tx_address: {:x}, rx0_address: {:x}, rx1_address: {:x}, status: {} auto_ack_channels: {:06b} }}",
+            "Nrf24l01 {{ channel: {}, frequency: {}, data_rate: {}, pa_level: {}, crc_encoding_scheme: {}, payload_size: {}, retry_setup: {}, mode: {}, address_width: {}, awaits_ack: {}, tx_address: {:x}, rx0_address: {:x}, rx1_address: {:x}, open_read_pipes: {:x}, status: {} auto_ack_channels: {:06b} }}",
             &self.channel,
             &(self.channel as u16 + 2400),
             &self.data_rate,
@@ -778,6 +778,7 @@ impl defmt::Format for DebugInfo {
             &self.tx_addr,
             &self.rx0_addr,
             &self.rx1_addr,
+            &self.open_read_pipes,
             &self.status,
             &self.auto_ack
         );
